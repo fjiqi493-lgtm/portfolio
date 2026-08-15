@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>STUDIO · 工业设计作品集</title>
+  <meta name="description" content="极简高级工业设计作品集 · 产品渲染 / Rhino·NX 建模 / 香水瓶包装" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 顶栏导航 -->
+  <header class="nav" id="nav">
+    <a class="brand" href="#/" data-brand>
+      <span class="brand-mark">◍</span>
+      <span class="brand-name" id="brandName">STUDIO</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#/" data-link>首页</a>
+      <a href="#/works" data-link>作品</a>
+      <a href="#/about" data-link>关于</a>
+    </nav>
+  </header>
+
+  <!-- 视图渲染容器 -->
+  <main id="app" class="app"></main>
+
+  <!-- 页脚（含隐藏的管理员入口） -->
+  <footer class="foot">
+    <div class="foot-inner">
+      <span class="foot-copy" id="footCopy">© 2026 STUDIO. 保留所有权利。</span>
+      <!-- 隐藏入口：右下角极小的「管理」点，点击打开后台登录 -->
+      <button class="admin-trigger" id="adminTrigger" title="管理员入口" aria-label="管理员入口">·</button>
+    </div>
+  </footer>
+
+  <!-- 图片放大灯箱 -->
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button class="lb-close" id="lbClose" aria-label="关闭">×</button>
+    <button class="lb-nav lb-prev" id="lbPrev" aria-label="上一张">‹</button>
+    <img class="lb-img" id="lbImg" alt="预览" />
+    <button class="lb-nav lb-next" id="lbNext" aria-label="下一张">›</button>
+    <div class="lb-count" id="lbCount"></div>
+  </div>
+
+  <!-- 管理员登录 / 后台弹窗 -->
+  <div class="modal" id="adminModal" aria-hidden="true">
+    <div class="modal-backdrop" id="adminBackdrop"></div>
+    <div class="modal-card" id="adminCard">
+      <!-- 登录视图 -->
+      <div class="admin-login" id="adminLogin">
+        <h2>管理员登录</h2>
+        <p class="muted">请输入管理密码进入后台。普通访客无此入口。</p>
+        <input type="password" id="adminPwd" placeholder="管理密码" autocomplete="off" />
+        <button class="btn-primary" id="adminLoginBtn">进入后台</button>
+        <p class="admin-err" id="adminErr"></p>
+        <p class="admin-note muted">纯前端校验，仅防随手改动；正式保护请部署后端鉴权（见 README）。</p>
+      </div>
+
+      <!-- 后台主面板 -->
+      <div class="admin-panel hidden" id="adminPanel">
+        <div class="admin-head">
+          <h2>后台管理</h2>
+          <div class="admin-head-actions">
+            <span class="storage" id="storageInfo"></span>
+            <button class="btn-ghost" id="adminLogout">退出</button>
+          </div>
+        </div>
+
+        <div class="admin-tabs">
+          <button class="tab active" data-tab="works">作品管理</button>
+          <button class="tab" data-tab="profile">资料编辑</button>
+        </div>
+
+        <!-- 作品管理 -->
+        <section class="admin-tabpane active" id="tabWorks">
+          <div class="admin-toolbar">
+            <button class="btn-primary" id="addWorkBtn">+ 新增作品</button>
+          </div>
+          <div class="work-list" id="adminWorkList"></div>
+        </section>
+
+        <!-- 资料编辑 -->
+        <section class="admin-tabpane" id="tabProfile">
+          <label class="field">名称
+            <input type="text" id="pfName" />
+          </label>
+          <label class="field">头衔 / 副标题
+            <input type="text" id="pfTitle" />
+          </label>
+          <label class="field">头像
+            <input type="file" id="pfAvatar" accept="image/*" />
+          </label>
+          <label class="field">自我介绍
+            <textarea id="pfBio" rows="5"></textarea>
+          </label>
+          <button class="btn-primary" id="saveProfileBtn">保存资料</button>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 作品编辑弹窗（新增/编辑共用） -->
+  <div class="modal" id="editModal" aria-hidden="true">
+    <div class="modal-backdrop" id="editBackdrop"></div>
+    <div class="modal-card wide" id="editCard">
+      <div class="admin-head">
+        <h2 id="editTitle">新增作品</h2>
+        <button class="btn-ghost" id="editClose">关闭</button>
+      </div>
+      <div class="edit-body">
+        <label class="field">项目标题
+          <input type="text" id="wkTitle" placeholder="例如：Aero 桌面空气净化扇" />
+        </label>
+        <label class="field">项目简介
+          <textarea id="wkIntro" rows="4" placeholder="一句话描述项目背景、角色与目标"></textarea>
+        </label>
+
+        <div class="field">
+          <span class="field-label">作品图片（拖拽或点击上传，第一张为封面）</span>
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="wkFiles" accept="image/*" multiple hidden />
+            <div class="dz-hint">拖拽图片到此处，或 <span class="dz-link">点击选择</span></div>
+          </div>
+          <div class="thumbs" id="wkThumbs"></div>
+        </div>
+
+        <div class="field">
+          <span class="field-label">项目参数（可选，键值对）</span>
+          <div class="params" id="wkParams"></div>
+          <button class="btn-ghost sm" id="addParamBtn">+ 添加参数</button>
+        </div>
+      </div>
+      <div class="edit-foot">
+        <button class="btn-ghost" id="editCancel">取消</button>
+        <button class="btn-primary" id="editSave">保存作品</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
