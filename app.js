@@ -361,10 +361,14 @@
     setActiveNav();
     const h = location.hash || "#/";
     if (h === "#/admin") { openAdmin(); return; }
-    if (h.startsWith("#/work/")) return renderDetail(h.split("/")[2]);
-    if (h === "#/works") return renderWorks();
-    if (h === "#/about") return renderAbout();
-    return renderHome();
+    if (h.startsWith("#/work/")) renderDetail(h.split("/")[2]);
+    else if (h === "#/works") renderWorks();
+    else if (h === "#/about") renderAbout();
+    else renderHome();
+    // 路由切换：整体淡入（重新触发动画）
+    app.classList.remove("page-in");
+    void app.offsetWidth;
+    app.classList.add("page-in");
   }
 
   function revealObserve(root) {
@@ -379,7 +383,7 @@
     const p = _profile || {};
     const works = (_works || []).slice().sort((a, b) => b.createdAt - a.createdAt);
     const featured = works.slice(0, 3);
-    const cards = featured.map((w) => cardHTML(w)).join("");
+    const cards = featured.map((w, i) => cardHTML(w, i)).join("");
 
     app.innerHTML =
       `<section class="hero">
@@ -392,13 +396,13 @@
             <a class="btn-ghost" href="#/about">关于我</a>
           </div>
         </div>
-        <div class="hero-media reveal">${
+        <div class="hero-media">${
           p.avatar ? `<img src="${esc(p.avatar)}" alt="头像">` : ""
         }</div>
       </section>
 
       <section class="section">
-        <div class="section-head">
+        <div class="section-head reveal">
           <h2>精选作品</h2>
           <a class="count" href="#/works">全部 ${works.length} 件 →</a>
         </div>
@@ -410,10 +414,10 @@
     revealObserve(app);
   }
 
-  function cardHTML(w) {
+  function cardHTML(w, i = 0) {
     const cover = w.images && w.images.length ? w.images[0] : placeholder("NO IMAGE", "");
     return (
-      `<article class="card reveal" data-id="${esc(w.id)}">
+      `<article class="card reveal" data-id="${esc(w.id)}" style="--reveal-delay:${i * 0.07}s">
         <div class="card-media"><img src="${esc(cover)}" alt="${esc(w.title)}" loading="lazy"></div>
         <div class="card-body">
           <h3 class="card-title">${esc(w.title)}</h3>
@@ -428,12 +432,12 @@
     const works = (_works || []).slice().sort((a, b) => b.createdAt - a.createdAt);
     app.innerHTML =
       `<section class="section">
-        <div class="section-head">
+        <div class="section-head reveal">
           <h2>作品集</h2>
           <span class="count">${works.length} 件作品</span>
         </div>
         <div class="grid">
-          ${works.map((w) => cardHTML(w)).join("") ||
+          ${works.map((w, i) => cardHTML(w, i)).join("") ||
             `<div class="empty">还没有作品，管理员可在后台新增。</div>`}
         </div>
       </section>`;
@@ -447,7 +451,7 @@
     if (!w) { app.innerHTML = `<div class="empty">作品不存在或已被删除。<br><a href="#/works">返回作品集</a></div>`; return; }
 
     const shots = (w.images || []).map((src, i) =>
-      `<div class="shot" data-idx="${i}"><img src="${esc(src)}" alt="${esc(w.title)} ${i + 1}"></div>`
+      `<div class="shot reveal" data-idx="${i}" style="--reveal-delay:${i * 0.08}s"><img src="${esc(src)}" alt="${esc(w.title)} ${i + 1}"></div>`
     ).join("");
 
     const params = (w.params || []).map((p) =>
@@ -459,7 +463,7 @@
         <a class="detail-back" href="#/works">← 返回作品集</a>
         <div class="detail-grid">
           <div class="detail-media">${shots}</div>
-          <div class="detail-info">
+          <div class="detail-info reveal">
             <h1>${esc(w.title)}</h1>
             <p class="intro">${esc(w.intro || "")}</p>
             ${params ? `<div class="params">${params}</div>` : ""}
@@ -471,13 +475,14 @@
       s.addEventListener("click", () => openLightbox(w.images, Number(s.dataset.idx)));
     });
     window.scrollTo({ top: 0, behavior: "auto" });
+    revealObserve(app);
   }
 
   // —— 关于 ——
   function renderAbout() {
     const p = _profile || {};
     app.innerHTML =
-      `<div class="about">
+      `<div class="about reveal">
         ${p.avatar ? `<img class="avatar" src="${esc(p.avatar)}" alt="头像">` : ""}
         <h1>${esc(p.name || "STUDIO")}</h1>
         <p class="role">${esc(p.title || "工业设计师")}</p>
@@ -859,6 +864,20 @@
 
     window.addEventListener("hashchange", render);
     render();
+
+    // 顶栏收拢 + 顶部滚动进度条（微交互，增强灵动感）
+    const navEl = $("#nav");
+    const progressEl = $("#scrollProgress");
+    function onScroll() {
+      const y = window.scrollY || document.documentElement.scrollTop || 0;
+      if (navEl) navEl.classList.toggle("scrolled", y > 12);
+      if (progressEl) {
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        progressEl.style.width = (max > 0 ? (y / max) * 100 : 0) + "%";
+      }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
   }
 
   init();
