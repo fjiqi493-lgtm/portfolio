@@ -100,8 +100,8 @@
   /** 多级读取 data.json：jsDelivr(国内友好) → 同域 Pages(最稳) → raw(兜底) → null */
   async function fetchDataJson() {
     const sources = [
-      { name: "jsDelivr", url: JSDELIVR_URL },
       { name: "GitHub Pages", url: GH_PAGES_URL },
+      { name: "jsDelivr", url: JSDELIVR_URL },
       { name: "raw", url: GH_RAW_URL },
     ];
     for (const s of sources) {
