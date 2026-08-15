@@ -23,6 +23,9 @@
   // GitHub API 地址
   const GH_API_ROOT = "https://api.github.com";
   const GH_RAW_URL  = `https://raw.githubusercontent.com/${GH_USER}/${GH_REPO}/${GH_BRANCH}/${DATA_FILE}`;
+  // 读取用：多级降级地址（国内网络优先用可达的源，避免 raw 被墙导致访客看不到作品）
+  const GH_PAGES_URL  = `https://${GH_USER}.github.io/${GH_REPO}/${DATA_FILE}`;                 // 同域，最稳
+  const JSDELIVR_URL  = `https://cdn.jsdelivr.net/gh/${GH_USER}/${GH_REPO}@${GH_BRANCH}/${DATA_FILE}`; // 国内友好 CDN
 
   const K_WORKS    = "idp_works_v1";
   const K_PROFILE  = "idp_profile_v1";
@@ -94,6 +97,29 @@
     return { works: Array.from(map.values()), profile: profile || {} };
   }
 
+  /** 多级读取 data.json：jsDelivr(国内友好) → 同域 Pages(最稳) → raw(兜底) → null */
+  async function fetchDataJson() {
+    const sources = [
+      { name: "jsDelivr", url: JSDELIVR_URL },
+      { name: "GitHub Pages", url: GH_PAGES_URL },
+      { name: "raw", url: GH_RAW_URL },
+    ];
+    for (const s of sources) {
+      try {
+        const resp = await fetch(s.url + (s.url.includes("?") ? "&" : "?") + "t=" + Date.now(), { cache: "no-store" });
+        if (!resp.ok) { console.warn(`[Portfolio] ${s.name} 读取失败 HTTP ${resp.status}`); continue; }
+        const data = JSON.parse(await resp.text());
+        if (data && Array.isArray(data.works)) {
+          console.log(`[Portfolio] 已从 ${s.name} 读取数据（${data.works.length} 件作品）`);
+          return data;
+        }
+      } catch (e) {
+        console.warn(`[Portfolio] ${s.name} 读取异常：`, e.message);
+      }
+    }
+    return null;
+  }
+
   /** 从 GitHub 拉取最新数据（与本地合并，绝不覆盖本地未同步的作品） */
   async function fetchFromGitHub() {
     _syncStatus = "loading";
@@ -101,9 +127,8 @@
     const localWorks = loadWorksCache() || [];
     const localProfile = loadProfileCache() || {};
     try {
-      const resp = await fetch(GH_RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const data = JSON.parse(await resp.text());
+      const data = await fetchDataJson();
+      if (!data) throw new Error("所有数据源均不可达");
       const remoteWorks = data.works || [];
       const merged = mergeData(remoteWorks, data.profile || {}, localWorks, localProfile);
       _works   = merged.works;
