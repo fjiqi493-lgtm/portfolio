@@ -523,10 +523,10 @@
   function showPanel() {
     $("#adminLogin").classList.add("hidden");
     $("#adminPanel").classList.remove("hidden");
-    renderAdminWorks();
-    renderProfileForm();
-    updateStorageInfo();
-    renderTokenInfo();
+    try { renderAdminWorks(); } catch (e) { console.error("[Portfolio] renderAdminWorks 失败", e); }
+    try { renderProfileForm(); } catch (e) { console.error("[Portfolio] renderProfileForm 失败", e); }
+    try { updateStorageInfo(); } catch (e) { console.error("[Portfolio] updateStorageInfo 失败", e); }
+    try { renderTokenInfo(); } catch (e) { console.error("[Portfolio] renderTokenInfo 失败", e); }
   }
   function updateStorageInfo() {
     $("#storageInfo").textContent = "本地已用 " + storageUsedMB() + " MB" +
@@ -537,25 +537,22 @@
     const el = $("#tokenInfo");
     if (!el) return;
     const t = getGhToken();
-    el.innerHTML = t
-      ? `<span style="color:var(--success,#2ea043)">✓ Token 已配置（${t.slice(0,8)}…）</span> <button class="btn-ghost sm" id="clearTokenBtn">清除</button>`
-      : `<span style="color:var(--warn,#d29922)">⚠ 未配置 Token</span> <button class="btn-primary sm" id="setTokenBtn">设置</button>`;
+    el.innerHTML = `
+      <div class="token-row">
+        <input type="password" id="ghTokenInput" class="token-input" placeholder="粘贴 GitHub Token（需 repo 权限）" value="${t ? esc(t) : ""}" autocomplete="off" />
+        <button class="btn-primary sm" id="saveTokenBtn">保存</button>
+        ${t ? `<button class="btn-ghost sm" id="clearTokenBtn">清除</button>` : ""}
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:6px;">
+        Token 仅保存在当前浏览器 localStorage，不会写入源码或上传 GitHub。<br>
+        需要 <code>repo</code> 权限的 PAT（GitHub → Settings → Developer settings → PAT → Generate new token）。
+      </p>`;
 
-    const setBtn = $("#setTokenBtn");
-    if (setBtn) setBtn.addEventListener("click", showTokenDialog);
-    const clrBtn = $("#clearTokenBtn");
-    if (clrBtn) clrBtn.addEventListener("click", () => { setGhToken(null); renderTokenInfo(); });
-  }
-
-  function showTokenDialog() {
-    const t = prompt(
-      "请输入你的 GitHub Personal Access Token（需要 repo 权限）。\n\n" +
-      "获取方式：GitHub → Settings → Developer settings → Personal access tokens → Generate new token\n" +
-      "勾选 repo 权限即可。",
-      getGhToken() || ""
-    );
-    if (t && t.trim()) {
-      setGhToken(t.trim());
+    const saveBtn = $("#saveTokenBtn");
+    if (saveBtn) saveBtn.addEventListener("click", () => {
+      const val = ($("#ghTokenInput").value || "").trim();
+      if (!val) { alert("请输入 Token。"); return; }
+      setGhToken(val);
       renderTokenInfo();
       if (_pendingLocal) {
         pushToGitHub().then((ok) =>
@@ -563,9 +560,11 @@
             ? "Token 已保存 ✓ 本地尚未同步的作品已自动推送到 GitHub，刷新其他设备即可看到。"
             : "Token 已保存，但推送到 GitHub 失败，请稍后点「立即从 GitHub 重新拉取」再试。"));
       } else {
-        alert("Token 已保存（已记住，下次无需重填）。现在保存作品会自动同步到 GitHub。");
+        alert("Token 已保存（已记住，下次无需重填）。保存作品会自动同步到 GitHub。");
       }
-    }
+    });
+    const clrBtn = $("#clearTokenBtn");
+    if (clrBtn) clrBtn.addEventListener("click", () => { setGhToken(null); renderTokenInfo(); });
   }
 
   $("#adminTrigger").addEventListener("click", openAdmin);
@@ -585,17 +584,20 @@
     closeAdmin();
   });
 
-  // 标签页切换
-  $$(".admin-tabs .tab").forEach((t) => {
-    t.addEventListener("click", () => {
+  // 标签页切换（事件委托，更稳健：即使某个 pane 渲染失败也能切换）
+  const tabBar = $(".admin-tabs");
+  if (tabBar) {
+    tabBar.addEventListener("click", (e) => {
+      const t = e.target.closest(".tab");
+      if (!t) return;
       $$(".admin-tabs .tab").forEach((x) => x.classList.remove("active"));
       t.classList.add("active");
       const name = t.dataset.tab;
-      $("#tabWorks").classList.toggle("active", name === "works");
-      $("#tabProfile").classList.toggle("active", name === "profile");
-      $("#tabSettings").classList.toggle("active", name === "settings");
+      const tp = $("#tabWorks"); if (tp) tp.classList.toggle("active", name === "works");
+      const pf = $("#tabProfile"); if (pf) pf.classList.toggle("active", name === "profile");
+      const st = $("#tabSettings"); if (st) st.classList.toggle("active", name === "settings");
     });
-  });
+  }
 
   // 后台作品列表
   function renderAdminWorks() {
