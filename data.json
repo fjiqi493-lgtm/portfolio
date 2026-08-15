@@ -83,6 +83,14 @@
         }
       ],
       "createdAt": 1755300000000
+    },
+    {
+      "id": "__sync_test__",
+      "title": "SYNC TEST",
+      "intro": "",
+      "images": [],
+      "params": [],
+      "createdAt": 1786779610946
     }
   ],
   "profile": {
