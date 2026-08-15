@@ -178,6 +178,7 @@
   function render() {
     setActiveNav();
     const h = location.hash || "#/";
+    if (h === "#/admin") { openAdmin(); return; }
     if (h.startsWith("#/work/")) return renderDetail(h.split("/")[2]);
     if (h === "#/works") return renderWorks();
     if (h === "#/about") return renderAbout();

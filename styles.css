@@ -179,11 +179,14 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 13px; color: var(--muted);
 }
 .admin-trigger {
-  border: none; background: none; color: var(--line-strong);
-  font-size: 26px; line-height: 1; width: 28px; height: 28px;
-  opacity: .35; transition: opacity .25s var(--ease), color .25s var(--ease);
+  border: none; background: none; color: var(--muted);
+  font-size: 18px; line-height: 1; width: auto; height: auto;
+  padding: 4px 8px; border-radius: var(--radius-sm);
+  opacity: .45; cursor: pointer;
+  transition: opacity .25s var(--ease), color .25s var(--ease), background .25s var(--ease);
+  letter-spacing: 1px;
 }
-.admin-trigger:hover { opacity: 1; color: var(--ink); }
+.admin-trigger:hover { opacity: 1; color: var(--ink); background: var(--surface); }
 
 /* ---------- 按钮 ---------- */
 .btn-primary {
