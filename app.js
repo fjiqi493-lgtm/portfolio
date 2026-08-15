@@ -125,8 +125,8 @@
     updateSyncUI();
   }
 
-  /** 推送数据到 GitHub（管理员保存时调用） */
-  async function pushToGitHub() {
+  /** 推送数据到 GitHub（管理员保存时调用，含 SHA 冲突自动重试） */
+  async function pushToGitHub(maxRetries = 3) {
     const token = getGhToken();
     if (!token) {
       alert("未配置 GitHub Token，数据将仅保存在本地浏览器。\n\n请在后台「设置」中填入你的 GitHub Personal Access Token。");
@@ -139,51 +139,70 @@
     const payload = JSON.stringify({ works: _works, profile: _profile }, null, 2);
     const base64 = btoa(unescape(encodeURIComponent(payload)));
 
-    try {
-      // 1. 获取当前文件 SHA
-      const getUrl = `${GH_API_ROOT}/repos/${GH_USER}/${GH_REPO}/contents/${DATA_FILE}?ref=${GH_BRANCH}`;
-      const getResp = await fetch(getUrl, {
-        headers: { "Authorization": "token " + token, "Accept": "application/vnd.github+json" }
-      });
-      if (!getResp.ok && getResp.status !== 404) throw new Error("获取文件失败 HTTP " + getResp.status);
+    const getUrl = `${GH_API_ROOT}/repos/${GH_USER}/${GH_REPO}/contents/${DATA_FILE}?ref=${GH_BRANCH}`;
+    const putUrl = `${GH_API_ROOT}/repos/${GH_USER}/${GH_REPO}/contents/${DATA_FILE}`;
 
-      let sha = null;
-      if (getResp.ok) {
-        const fileInfo = await getResp.json();
-        sha = fileInfo.sha;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // 1. 获取当前文件 SHA（每次重试都重新获取最新值）
+        const getResp = await fetch(getUrl, {
+          headers: { "Authorization": "token " + token, "Accept": "application/vnd.github+json" }
+        });
+        if (!getResp.ok && getResp.status !== 404) throw new Error("获取文件失败 HTTP " + getResp.status);
+
+        let sha = null;
+        if (getResp.ok) {
+          const fileInfo = await getResp.json();
+          sha = fileInfo.sha;
+        }
+
+        // 2. 写入 / 创建文件
+        const body = {
+          message: "更新作品集数据 (" + new Date().toLocaleString("zh-CN") + ")",
+          content: base64,
+          branch: GH_BRANCH
+        };
+        if (sha) body.sha = sha;
+
+        const putResp = await fetch(putUrl, {
+          method: "PUT",
+          headers: { "Authorization": "token " + token, "Accept": "application/vnd.github+json" },
+          body: JSON.stringify(body)
+        });
+        if (!putResp.ok) {
+          const errData = await putResp.json().catch(() => ({}));
+          const errMsg = errData.message || ("写入失败 HTTP " + putResp.status);
+
+          // 如果是 SHA 冲突且还有重试次数，自动重试
+          if (errMsg.includes("does not match") && attempt < maxRetries) {
+            console.warn(`[Portfolio] SHA 冲突（第 ${attempt} 次），自动重试…`);
+            await new Promise(r => setTimeout(r, 600 * attempt)); // 递增延迟：0.6s, 1.2s
+            continue;
+          }
+          throw new Error(errMsg);
+        }
+
+        // 成功：更新本地缓存
+        saveWorksCache(_works);
+        saveProfileCache(_profile);
+        _pendingLocal = false;
+        console.log("[Portfolio] 已推送到 GitHub" + (attempt > 1 ? `（第 ${attempt} 次尝试成功）` : ""));
+        return true;
+      } catch (e) {
+        if (attempt === maxRetries) {
+          // 最后一次尝试也失败了
+          console.error("[Portfolio] 推送失败（已重试 " + maxRetries + "次）：", e);
+          alert("同步到 GitHub 失败：" + e.message + "\n\n数据已保存在本机浏览器，稍后可重试。");
+          saveWorksCache(_works);
+          saveProfileCache(_profile);
+          return false;
+        }
+        // 非 SHA 冲突类错误也重试（网络抖动等）
+        console.warn(`[Portfolio] 推送异常（第 ${attempt} 次）：${e.message}，自动重试…`);
+        await new Promise(r => setTimeout(r, 400 * attempt));
       }
-
-      // 2. 写入 / 创建文件
-      const putUrl = `${GH_API_ROOT}/repos/${GH_USER}/${GH_REPO}/contents/${DATA_FILE}`;
-      const body = {
-        message: "更新作品集数据 (" + new Date().toLocaleString("zh-CN") + ")",
-        content: base64,
-        branch: GH_BRANCH
-      };
-      if (sha) body.sha = sha;
-
-      const putResp = await fetch(putUrl, {
-        method: "PUT",
-        headers: { "Authorization": "token " + token, "Accept": "application/vnd.github+json" },
-        body: JSON.stringify(body)
-      });
-      if (!putResp.ok) {
-        const errData = await putResp.json().catch(() => ({}));
-        throw new Error(errData.message || "写入失败 HTTP " + putResp.status);
-      }
-
-      // 同时更新本地缓存
-      saveWorksCache(_works);
-      saveProfileCache(_profile);
-      console.log("[Portfolio] 已推送到 GitHub");
-      return true;
-    } catch (e) {
-      console.error("[Portfolio] 推送失败：", e);
-      alert("同步到 GitHub 失败：" + e.message + "\n\n数据已保存在本机浏览器，稍后可重试。");
-      saveWorksCache(_works);
-      saveProfileCache(_profile);
-      return false;
     }
+    return false;
   }
 
   /** 显示同步状态 */
