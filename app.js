@@ -27,7 +27,7 @@
   const K_WORKS    = "idp_works_v1";
   const K_PROFILE  = "idp_profile_v1";
   const K_SESSION  = "idp_admin_session_v1";
-  const K_GH_TOKEN = "idp_gh_token_v1";   // GitHub Token（sessionStorage，不落盘）
+  const K_GH_TOKEN = "idp_gh_token_v1";   // GitHub Token（localStorage，持久记忆，避免刷新后丢失）
 
   const MAX_DIM = 1600;
   const JPEG_Q  = 0.82;
@@ -54,6 +54,7 @@
   let _profile = null;
   let _dataSha = null;  // GitHub 上 data.json 的 SHA（写回时需要）
   let _syncStatus = ""; // "loading" | "ok" | "error" | "offline"
+  let _pendingLocal = false; // 本地有 GitHub 上没有的作品，待补推
 
   /** 从 localStorage 读取缓存 */
   function loadWorksCache() {
@@ -64,40 +65,61 @@
     try { return JSON.parse(localStorage.getItem(K_PROFILE)) || null; }
     catch (e) { return null; }
   }
-  function saveWorksCache(w) { localStorage.setItem(K_WORKS, JSON.stringify(w)); }
-  function saveProfileCache(p) { localStorage.setItem(K_PROFILE, JSON.stringify(p)); }
+  function saveWorksCache(w) { try { localStorage.setItem(K_WORKS, JSON.stringify(w)); } catch (e) { console.warn("[Portfolio] 本地缓存写入失败（可能超容量）", e); } }
+  function saveProfileCache(p) { try { localStorage.setItem(K_PROFILE, JSON.stringify(p)); } catch (e) { console.warn("[Portfolio] 本地缓存写入失败", e); } }
 
   /** 对外接口（其他代码只调这两个） */
   function loadWorks()   { return _works; }
   function loadProfile() { return _profile; }
 
-  /** 获取 GitHub Token（从 sessionStorage） */
-  function getGhToken() { return sessionStorage.getItem(K_GH_TOKEN); }
+  /** 已删除作品 id（防止被本地缓存「复活」） */
+  const K_DELETED = "idp_deleted_v1";
+  function loadDeleted() { try { return new Set(JSON.parse(localStorage.getItem(K_DELETED)) || []); } catch (e) { return new Set(); } }
+  function addDeleted(id) { try { const s = loadDeleted(); s.add(id); localStorage.setItem(K_DELETED, JSON.stringify(Array.from(s))); } catch (e) {} }
+
+  /** 获取 GitHub Token（持久化在 localStorage，刷新/重开不再丢失） */
+  function getGhToken() { return localStorage.getItem(K_GH_TOKEN); }
   function setGhToken(t) {
-    if (t) sessionStorage.setItem(K_GH_TOKEN, t);
-    else sessionStorage.removeItem(K_GH_TOKEN);
+    if (t) localStorage.setItem(K_GH_TOKEN, t);
+    else localStorage.removeItem(K_GH_TOKEN);
   }
 
-  /** 从 GitHub 拉取最新数据 */
+  /** 合并远程与本地数据：远程优先（同 id 用远程），本地独有的作品保留，已删除的剔除 */
+  function mergeData(remoteWorks, remoteProfile, localWorks, localProfile) {
+    const deleted = loadDeleted();
+    const map = new Map();
+    (remoteWorks || []).forEach((w) => { if (!deleted.has(w.id)) map.set(w.id, w); });
+    (localWorks || []).forEach((w) => { if (!deleted.has(w.id) && !map.has(w.id)) map.set(w.id, w); });
+    const profile = (remoteProfile && Object.keys(remoteProfile).length) ? remoteProfile : localProfile;
+    return { works: Array.from(map.values()), profile: profile || {} };
+  }
+
+  /** 从 GitHub 拉取最新数据（与本地合并，绝不覆盖本地未同步的作品） */
   async function fetchFromGitHub() {
     _syncStatus = "loading";
     updateSyncUI();
+    const localWorks = loadWorksCache() || [];
+    const localProfile = loadProfileCache() || {};
     try {
       const resp = await fetch(GH_RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const text = await resp.text();
-      const data = JSON.parse(text);
-      _works   = data.works || [];
-      _profile = data.profile || {};
-      // 写入本地缓存
+      const data = JSON.parse(await resp.text());
+      const remoteWorks = data.works || [];
+      const merged = mergeData(remoteWorks, data.profile || {}, localWorks, localProfile);
+      _works   = merged.works;
+      _profile = merged.profile;
+      // 本地有、GitHub 上没有（且未删除）→ 标记为待补推，有 token 时自动同步
+      const remoteIds = new Set(remoteWorks.map((w) => w.id));
+      const deleted = loadDeleted();
+      _pendingLocal = (localWorks || []).some((w) => !remoteIds.has(w.id) && !deleted.has(w.id));
       saveWorksCache(_works);
       saveProfileCache(_profile);
       _syncStatus = "ok";
-      console.log("[Portfolio] 已从 GitHub 同步数据：" + _works.length + " 件作品");
+      console.log("[Portfolio] 已从 GitHub 同步数据：" + _works.length + " 件作品（本地待补推：" + _pendingLocal + "）");
     } catch (e) {
       console.warn("[Portfolio] GitHub 拉取失败，使用本地缓存：", e.message);
-      _works   = loadWorksCache();
-      _profile = loadProfileCache();
+      _works   = localWorks;
+      _profile = localProfile;
       _syncStatus = "error";
     }
     updateSyncUI();
@@ -516,7 +538,14 @@
     if (t && t.trim()) {
       setGhToken(t.trim());
       renderTokenInfo();
-      alert("Token 已保存（仅在当前浏览器会话有效）。现在保存作品时会自动同步到 GitHub。");
+      if (_pendingLocal) {
+        pushToGitHub().then((ok) =>
+          alert(ok
+            ? "Token 已保存 ✓ 本地尚未同步的作品已自动推送到 GitHub，刷新其他设备即可看到。"
+            : "Token 已保存，但推送到 GitHub 失败，请稍后点「立即从 GitHub 重新拉取」再试。"));
+      } else {
+        alert("Token 已保存（已记住，下次无需重填）。现在保存作品会自动同步到 GitHub。");
+      }
     }
   }
 
@@ -570,6 +599,7 @@
     $$("[data-del]", list).forEach((b) =>
       b.addEventListener("click", () => {
         if (!confirm("确定删除该作品？此操作会同步到 GitHub。")) return;
+        addDeleted(b.dataset.del);
         _works = _works.filter((x) => x.id !== b.dataset.del);
         pushToGitHub();
         renderAdminWorks();
@@ -744,21 +774,29 @@
     $("#forceSyncBtn").disabled = true;
     $("#forceSyncBtn").textContent = "⏳ 拉取中…";
     await fetchFromGitHub();
+    if (getGhToken() && _pendingLocal) await pushToGitHub();
     render();
     updateStorageInfo();
     $("#forceSyncBtn").disabled = false;
     $("#forceSyncBtn").textContent = "🔄 立即从 GitHub 重新拉取";
-    alert(_syncStatus === "ok" ? "已从 GitHub 同步最新数据 ✓" : "拉取失败，使用本地缓存");
+    alert(_syncStatus === "ok"
+      ? (_pendingLocal ? "已从 GitHub 同步，并把本地未同步的作品推上去了 ✓" : "已从 GitHub 同步最新数据 ✓")
+      : "拉取失败，使用本地缓存");
   });
 
   /* ---------------------------------------------------------
      ⑪ 启动：先从 GitHub 加载数据，再渲染
      --------------------------------------------------------- */
   async function init() {
-    // 先尝试从 GitHub 拉取
+    // 先尝试从 GitHub 拉取（会与本地合并，保留本地未同步作品）
     await fetchFromGitHub();
 
-    // 如果 GitHub 也没数据（全新部署），用种子数据并推送
+    // 本地有 GitHub 没有的作品，且已配置 Token → 立即补推（救回「先加后填 token」的数据）
+    if (getGhToken() && _pendingLocal) {
+      await pushToGitHub();
+    }
+
+    // 如果 GitHub 和本地都没有数据（全新部署），用种子数据并推送
     if (!_works || !_works.length) {
       console.log("[Portfolio] GitHub 无数据，使用种子数据");
       const seed = getSeedData();
