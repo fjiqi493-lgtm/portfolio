@@ -69,6 +69,7 @@
         <div class="admin-tabs">
           <button class="tab active" data-tab="works">作品管理</button>
           <button class="tab" data-tab="profile">资料编辑</button>
+          <button class="tab" data-tab="settings">设置</button>
         </div>
 
         <!-- 作品管理 -->
@@ -94,6 +95,25 @@
             <textarea id="pfBio" rows="5"></textarea>
           </label>
           <button class="btn-primary" id="saveProfileBtn">保存资料</button>
+        </section>
+
+        <!-- 设置（GitHub Token / 同步状态） -->
+        <section class="admin-tabpane" id="tabSettings">
+          <div class="field" style="margin-bottom:16px;">
+            <span class="field-label">数据同步状态</span>
+            <div id="syncStatus" style="font-size:13px;padding:8px 12px;background:var(--surface,#f7f6f3);border-radius:var(--radius-sm);">加载中…</div>
+          </div>
+          <div class="field" style="margin-bottom:16px;">
+            <span class="field-label">GitHub Token（用于同步数据到云端）</span>
+            <div id="tokenInfo" style="font-size:13px;"></div>
+            <p class="muted" style="font-size:12px;margin-top:6px;">
+              Token 仅保存在当前浏览器会话中，不会写入源码或上传到 GitHub。<br>
+              需要具有 <code>repo</code> 权限的 Personal Access Token。
+            </p>
+          </div>
+          <div class="field">
+            <button class="btn-ghost" id="forceSyncBtn">🔄 立即从 GitHub 重新拉取</button>
+          </div>
         </section>
       </div>
     </div>

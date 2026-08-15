@@ -1,22 +1,36 @@
 /* =========================================================
-   STUDIO · 工业设计作品集  —  应用逻辑（纯前端 / 无后端）
+   STUDIO · 工业设计作品集  —  应用逻辑（GitHub 同步版）
+   =========================================================
+   数据存储：作品和资料存在 GitHub 仓库的 data.json 中。
+   - 访客：从 GitHub 读取数据（无需任何凭据）
+   - 管理员：保存时通过 GitHub API 写回 data.json（需输入一次 Token）
+   - 离线/降级：localStorage 作为缓存，无网络时仍可浏览
    ========================================================= */
 (function () {
   "use strict";
 
   /* ---------------------------------------------------------
-     ① 配置区（你要改的东西基本都在这里）
+     ① 配置区
      --------------------------------------------------------- */
-  // ⚠️ 管理员密码：修改这里即可。注意纯前端密码仅防随手改动，
-  //    懂技术的人能在源码里看到，正式安全请部署后端（见 README）。
   const ADMIN_PASSWORD = "design2026";
 
-  const K_WORKS   = "idp_works_v1";      // 作品数据
-  const K_PROFILE  = "idp_profile_v1";    // 首页/关于资料
-  const K_SESSION  = "idp_admin_session_v1"; // 后台登录态（仅当前标签页会话）
+  // GitHub 配置（改成你自己的仓库）
+  const GH_USER  = "fjiqi493-lgtm";
+  const GH_REPO  = "portfolio";
+  const GH_BRANCH = "main";
+  const DATA_FILE = "data.json";
 
-  const MAX_DIM = 1600;   // 上传图片最长边压缩到 1600px，省本地空间
-  const JPEG_Q  = 0.82;   // JPEG 压缩质量
+  // GitHub API 地址
+  const GH_API_ROOT = "https://api.github.com";
+  const GH_RAW_URL  = `https://raw.githubusercontent.com/${GH_USER}/${GH_REPO}/${GH_BRANCH}/${DATA_FILE}`;
+
+  const K_WORKS    = "idp_works_v1";
+  const K_PROFILE  = "idp_profile_v1";
+  const K_SESSION  = "idp_admin_session_v1";
+  const K_GH_TOKEN = "idp_gh_token_v1";   // GitHub Token（sessionStorage，不落盘）
+
+  const MAX_DIM = 1600;
+  const JPEG_Q  = 0.82;
 
   /* ---------------------------------------------------------
      ② 小工具
@@ -32,21 +46,136 @@
   }
 
   /* ---------------------------------------------------------
-     ③ 本地存储读写
+     ③ 数据层：GitHub API + localStorage 缓存
      --------------------------------------------------------- */
-  function loadWorks() {
+
+  /** 内存中的当前数据（单例） */
+  let _works   = null;
+  let _profile = null;
+  let _dataSha = null;  // GitHub 上 data.json 的 SHA（写回时需要）
+  let _syncStatus = ""; // "loading" | "ok" | "error" | "offline"
+
+  /** 从 localStorage 读取缓存 */
+  function loadWorksCache() {
     try { return JSON.parse(localStorage.getItem(K_WORKS)) || null; }
     catch (e) { return null; }
   }
-  function saveWorks(w) { localStorage.setItem(K_WORKS, JSON.stringify(w)); }
-
-  function loadProfile() {
+  function loadProfileCache() {
     try { return JSON.parse(localStorage.getItem(K_PROFILE)) || null; }
     catch (e) { return null; }
   }
-  function saveProfile(p) { localStorage.setItem(K_PROFILE, JSON.stringify(p)); }
+  function saveWorksCache(w) { localStorage.setItem(K_WORKS, JSON.stringify(w)); }
+  function saveProfileCache(p) { localStorage.setItem(K_PROFILE, JSON.stringify(p)); }
 
-  // 估算已用本地空间（仅统计本应用两个键）
+  /** 对外接口（其他代码只调这两个） */
+  function loadWorks()   { return _works; }
+  function loadProfile() { return _profile; }
+
+  /** 获取 GitHub Token（从 sessionStorage） */
+  function getGhToken() { return sessionStorage.getItem(K_GH_TOKEN); }
+  function setGhToken(t) {
+    if (t) sessionStorage.setItem(K_GH_TOKEN, t);
+    else sessionStorage.removeItem(K_GH_TOKEN);
+  }
+
+  /** 从 GitHub 拉取最新数据 */
+  async function fetchFromGitHub() {
+    _syncStatus = "loading";
+    updateSyncUI();
+    try {
+      const resp = await fetch(GH_RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const text = await resp.text();
+      const data = JSON.parse(text);
+      _works   = data.works || [];
+      _profile = data.profile || {};
+      // 写入本地缓存
+      saveWorksCache(_works);
+      saveProfileCache(_profile);
+      _syncStatus = "ok";
+      console.log("[Portfolio] 已从 GitHub 同步数据：" + _works.length + " 件作品");
+    } catch (e) {
+      console.warn("[Portfolio] GitHub 拉取失败，使用本地缓存：", e.message);
+      _works   = loadWorksCache();
+      _profile = loadProfileCache();
+      _syncStatus = "error";
+    }
+    updateSyncUI();
+  }
+
+  /** 推送数据到 GitHub（管理员保存时调用） */
+  async function pushToGitHub() {
+    const token = getGhToken();
+    if (!token) {
+      alert("未配置 GitHub Token，数据将仅保存在本地浏览器。\n\n请在后台「设置」中填入你的 GitHub Personal Access Token。");
+      // 降级：只存本地
+      saveWorksCache(_works);
+      saveProfileCache(_profile);
+      return false;
+    }
+
+    const payload = JSON.stringify({ works: _works, profile: _profile }, null, 2);
+    const base64 = btoa(unescape(encodeURIComponent(payload)));
+
+    try {
+      // 1. 获取当前文件 SHA
+      const getUrl = `${GH_API_ROOT}/repos/${GH_USER}/${GH_REPO}/contents/${DATA_FILE}?ref=${GH_BRANCH}`;
+      const getResp = await fetch(getUrl, {
+        headers: { "Authorization": "token " + token, "Accept": "application/vnd.github+json" }
+      });
+      if (!getResp.ok && getResp.status !== 404) throw new Error("获取文件失败 HTTP " + getResp.status);
+
+      let sha = null;
+      if (getResp.ok) {
+        const fileInfo = await getResp.json();
+        sha = fileInfo.sha;
+      }
+
+      // 2. 写入 / 创建文件
+      const putUrl = `${GH_API_ROOT}/repos/${GH_USER}/${GH_REPO}/contents/${DATA_FILE}`;
+      const body = {
+        message: "更新作品集数据 (" + new Date().toLocaleString("zh-CN") + ")",
+        content: base64,
+        branch: GH_BRANCH
+      };
+      if (sha) body.sha = sha;
+
+      const putResp = await fetch(putUrl, {
+        method: "PUT",
+        headers: { "Authorization": "token " + token, "Accept": "application/vnd.github+json" },
+        body: JSON.stringify(body)
+      });
+      if (!putResp.ok) {
+        const errData = await putResp.json().catch(() => ({}));
+        throw new Error(errData.message || "写入失败 HTTP " + putResp.status);
+      }
+
+      // 同时更新本地缓存
+      saveWorksCache(_works);
+      saveProfileCache(_profile);
+      console.log("[Portfolio] 已推送到 GitHub");
+      return true;
+    } catch (e) {
+      console.error("[Portfolio] 推送失败：", e);
+      alert("同步到 GitHub 失败：" + e.message + "\n\n数据已保存在本机浏览器，稍后可重试。");
+      saveWorksCache(_works);
+      saveProfileCache(_profile);
+      return false;
+    }
+  }
+
+  /** 显示同步状态 */
+  function updateSyncUI() {
+    const el = $("#syncStatus");
+    if (!el) return;
+    el.textContent =
+      _syncStatus === "loading" ? "⏳ 同步中…" :
+      _syncStatus === "ok"      ? "✓ 已同步" :
+      _syncStatus === "error"   ? "⚠ 使用本地缓存" :
+      _syncStatus === "offline" ? "📴 离线模式" : "";
+  }
+
+  // 估算已用空间
   function storageUsedMB() {
     let bytes = 0;
     [K_WORKS, K_PROFILE].forEach((k) => {
@@ -57,7 +186,7 @@
   }
 
   /* ---------------------------------------------------------
-     ④ 首次访问的种子数据（中性灰占位图，可全部在后台删除）
+     ④ 种子数据（首次离线或 GitHub 无数据时的默认值）
      --------------------------------------------------------- */
   function placeholder(label, sub) {
     const svg =
@@ -73,66 +202,61 @@
     return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
   }
 
-  function seedIfEmpty() {
-    if (loadWorks()) return;
-
-    const seeds = [
-      {
-        id: uid(), title: "Aero 桌面空气净化扇",
-        intro: "面向居家办公场景的桌面空气净化扇，主打低噪与极简体量，外壳采用回收铝。",
-        images: [placeholder("AERO FAN", "Rendering"), placeholder("AERO FAN", "Detail")],
-        params: [
-          { k: "材料", v: "回收铝合金 / ABS" },
-          { k: "尺寸", v: "180 × 180 × 210 mm" },
-          { k: "角色", v: "ID / CMF" },
-          { k: "年份", v: "2025" },
-        ], createdAt: Date.now() - 3000,
-      },
-      {
-        id: uid(), title: "NOIR 香水瓶 · 包装系统",
-        intro: "高端男士香水瓶体与外包装一体化设计，哑光玻璃搭配磁吸木盖。",
-        images: [placeholder("NOIR EDP", "Bottle"), placeholder("NOIR EDP", "Pack")],
-        params: [
-          { k: "容量", v: "50 / 100 ml" },
-          { k: "工艺", v: "哑光喷砂玻璃" },
-          { k: "角色", v: "包装设计" },
-          { k: "年份", v: "2024" },
-        ], createdAt: Date.now() - 2000,
-      },
-      {
-        id: uid(), title: "Link 工业连接件 · NX 建模",
-        intro: "基于 NX 的参数化连接件系列，用于模块化设备框架的快速装配。",
-        images: [placeholder("LINK PART", "NX Model"), placeholder("LINK PART", "Assembly")],
-        params: [
-          { k: "软件", v: "Siemens NX" },
-          { k: "工艺", v: "CNC / 压铸" },
-          { k: "角色", v: "结构设计" },
-          { k: "年份", v: "2025" },
-        ], createdAt: Date.now() - 1000,
-      },
-    ];
-    saveWorks(seeds);
-
-    saveProfile({
-      name: "STUDIO",
-      title: "工业设计师 · 产品 / CMF / 包装",
-      bio: "专注消费电子与生活方式产品的工业设计，擅长从概念草图到量产落地的完整链路。工作涵盖 Rhino / NX 建模、CMF 与包装系统。",
-      avatar: placeholder("AVATAR", ""),
-    });
+  function getSeedData() {
+    return {
+      works: [
+        {
+          id: uid(), title: "Aero 桌面空气净化扇",
+          intro: "面向居家办公场景的桌面空气净化扇，主打低噪与极简体量，外壳采用回收铝。",
+          images: [placeholder("AERO FAN", "Rendering"), placeholder("AERO FAN", "Detail")],
+          params: [
+            { k: "材料", v: "回收铝合金 / ABS" },
+            { k: "尺寸", v: "180 × 180 × 210 mm" },
+            { k: "角色", v: "ID / CMF" },
+            { k: "年份", v: "2025" },
+          ], createdAt: Date.now() - 3000,
+        },
+        {
+          id: uid(), title: "NOIR 香水瓶 · 包装系统",
+          intro: "高端男士香水瓶体与外包装一体化设计，哑光玻璃搭配磁吸木盖。",
+          images: [placeholder("NOIR EDP", "Bottle"), placeholder("NOIR EDP", "Pack")],
+          params: [
+            { k: "容量", v: "50 / 100 ml" },
+            { k: "工艺", v: "哑光喷砂玻璃" },
+            { k: "角色", v: "包装设计" },
+            { k: "年份", v: "2024" },
+          ], createdAt: Date.now() - 2000,
+        },
+        {
+          id: uid(), title: "Link 工业连接件 · NX 建模",
+          intro: "基于 NX 的参数化连接件系列，用于模块化设备框架的快速装配。",
+          images: [placeholder("LINK PART", "NX Model"), placeholder("LINK PART", "Assembly")],
+          params: [
+            { k: "软件", v: "Siemens NX" },
+            { k: "工艺", v: "CNC / 压铸" },
+            { k: "角色", v: "结构设计" },
+            { k: "年份", v: "2025" },
+          ], createdAt: Date.now() - 1000,
+        },
+      ],
+      profile: {
+        name: "STUDIO",
+        title: "工业设计师 · 产品 / CMF / 包装",
+        bio: "专注消费电子与生活方式产品的工业设计，擅长从概念草图到量产落地的完整链路。工作涵盖 Rhino / NX 建模、CMF 与包装系统。",
+        avatar: placeholder("AVATAR", ""),
+      }
+    };
   }
 
   /* ---------------------------------------------------------
-     ⑤ 图片处理：上传前压缩，控制本地存储占用
+     ⑤ 图片处理
      --------------------------------------------------------- */
   function fileToDataURL(file) {
     return new Promise((res, rej) => {
       const r = new FileReader();
-      r.onload = () => res(r.result);
-      r.onerror = rej;
-      r.readAsDataURL(file);
+      r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
     });
   }
-
   function downscale(dataURL, maxDim, quality) {
     return new Promise((res, rej) => {
       const img = new Image();
@@ -140,23 +264,15 @@
         let { width, height } = img;
         if (width > maxDim || height > maxDim) {
           const s = maxDim / Math.max(width, height);
-          width = Math.round(width * s);
-          height = Math.round(height * s);
+          width = Math.round(width * s); height = Math.round(height * s);
         }
-        const cv = document.createElement("canvas");
-        cv.width = width; cv.height = height;
-        const ctx = cv.getContext("2d");
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, width, height);
+        const cv = document.createElement("canvas"); cv.width = width; cv.height = height;
+        const ctx = cv.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        try { res(cv.toDataURL("image/jpeg", quality)); }
-        catch (e) { rej(e); }
-      };
-      img.onerror = rej;
-      img.src = dataURL;
+        try { res(cv.toDataURL("image/jpeg", quality)); } catch (e) { rej(e); }
+      }; img.onerror = rej; img.src = dataURL;
     });
   }
-
   async function fileToStored(file) {
     const raw = await fileToDataURL(file);
     return await downscale(raw, MAX_DIM, JPEG_Q);
@@ -194,8 +310,8 @@
 
   // —— 首页 ——
   function renderHome() {
-    const p = loadProfile() || {};
-    const works = (loadWorks() || []).slice().sort((a, b) => b.createdAt - a.createdAt);
+    const p = _profile || {};
+    const works = (_works || []).slice().sort((a, b) => b.createdAt - a.createdAt);
     const featured = works.slice(0, 3);
     const cards = featured.map((w) => cardHTML(w)).join("");
 
@@ -243,7 +359,7 @@
 
   // —— 作品列表 ——
   function renderWorks() {
-    const works = (loadWorks() || []).slice().sort((a, b) => b.createdAt - a.createdAt);
+    const works = (_works || []).slice().sort((a, b) => b.createdAt - a.createdAt);
     app.innerHTML =
       `<section class="section">
         <div class="section-head">
@@ -260,7 +376,7 @@
 
   // —— 详情 ——
   function renderDetail(id) {
-    const works = loadWorks() || [];
+    const works = _works || [];
     const w = works.find((x) => x.id === id);
     if (!w) { app.innerHTML = `<div class="empty">作品不存在或已被删除。<br><a href="#/works">返回作品集</a></div>`; return; }
 
@@ -293,7 +409,7 @@
 
   // —— 关于 ——
   function renderAbout() {
-    const p = loadProfile() || {};
+    const p = _profile || {};
     app.innerHTML =
       `<div class="about">
         ${p.avatar ? `<img class="avatar" src="${esc(p.avatar)}" alt="头像">` : ""}
@@ -305,14 +421,14 @@
     revealObserve(app);
   }
 
-  // 卡片点击跳转（事件委托）
+  // 卡片点击跳转
   app.addEventListener("click", (e) => {
     const card = e.target.closest(".card");
     if (card && card.dataset.id) location.hash = "#/work/" + card.dataset.id;
   });
 
   /* ---------------------------------------------------------
-     ⑦ 灯箱（点击大图放大预览）
+     ⑦ 灯箱
      --------------------------------------------------------- */
   const lb = $("#lightbox");
   let lbList = [], lbIdx = 0;
@@ -350,8 +466,7 @@
   function openAdmin() {
     adminModal.classList.add("open");
     adminModal.setAttribute("aria-hidden", "false");
-    if (isAdmin()) showPanel();
-    else showLogin();
+    if (isAdmin()) showPanel(); else showLogin();
   }
   function closeAdmin() {
     adminModal.classList.remove("open");
@@ -370,9 +485,39 @@
     renderAdminWorks();
     renderProfileForm();
     updateStorageInfo();
+    renderTokenInfo();
   }
   function updateStorageInfo() {
-    $("#storageInfo").textContent = "本地已用 " + storageUsedMB() + " MB";
+    $("#storageInfo").textContent = "本地已用 " + storageUsedMB() + " MB" +
+      (_syncStatus ? " · " + (_syncStatus === "ok" ? "✓ 云端已同步" : _syncStatus) : "");
+  }
+
+  function renderTokenInfo() {
+    const el = $("#tokenInfo");
+    if (!el) return;
+    const t = getGhToken();
+    el.innerHTML = t
+      ? `<span style="color:var(--success,#2ea043)">✓ Token 已配置（${t.slice(0,8)}…）</span> <button class="btn-ghost sm" id="clearTokenBtn">清除</button>`
+      : `<span style="color:var(--warn,#d29922)">⚠ 未配置 Token</span> <button class="btn-primary sm" id="setTokenBtn">设置</button>`;
+
+    const setBtn = $("#setTokenBtn");
+    if (setBtn) setBtn.addEventListener("click", showTokenDialog);
+    const clrBtn = $("#clearTokenBtn");
+    if (clrBtn) clrBtn.addEventListener("click", () => { setGhToken(null); renderTokenInfo(); });
+  }
+
+  function showTokenDialog() {
+    const t = prompt(
+      "请输入你的 GitHub Personal Access Token（需要 repo 权限）。\n\n" +
+      "获取方式：GitHub → Settings → Developer settings → Personal access tokens → Generate new token\n" +
+      "勾选 repo 权限即可。",
+      getGhToken() || ""
+    );
+    if (t && t.trim()) {
+      setGhToken(t.trim());
+      renderTokenInfo();
+      alert("Token 已保存（仅在当前浏览器会话有效）。现在保存作品时会自动同步到 GitHub。");
+    }
   }
 
   $("#adminTrigger").addEventListener("click", openAdmin);
@@ -400,17 +545,18 @@
       const name = t.dataset.tab;
       $("#tabWorks").classList.toggle("active", name === "works");
       $("#tabProfile").classList.toggle("active", name === "profile");
+      $("#tabSettings").classList.toggle("active", name === "settings");
     });
   });
 
   // 后台作品列表
   function renderAdminWorks() {
-    const works = (loadWorks() || []).slice().sort((a, b) => b.createdAt - a.createdAt);
+    const works = (_works || []).slice().sort((a, b) => b.createdAt - a.createdAt);
     const list = $("#adminWorkList");
     if (!works.length) { list.innerHTML = `<div class="muted" style="padding:10px 0;">暂无作品。</div>`; return; }
     list.innerHTML = works.map((w) =>
       `<div class="work-row">
-        <img src="${esc((w.images && w.images[0]) || placeholder("NO","") )}" alt="">
+        <img src="${esc((w.images && w.images[0]) || placeholder("NO",""))}" alt="">
         <div class="meta"><b>${esc(w.title)}</b><span>${esc(w.intro || "")}</span></div>
         <div class="acts">
           <button class="btn-ghost sm" data-edit="${esc(w.id)}">编辑</button>
@@ -423,12 +569,12 @@
       b.addEventListener("click", () => openEdit(b.dataset.edit)));
     $$("[data-del]", list).forEach((b) =>
       b.addEventListener("click", () => {
-        if (!confirm("确定删除该作品？此操作不可恢复。")) return;
-        const all = loadWorks().filter((x) => x.id !== b.dataset.del);
-        saveWorks(all);
+        if (!confirm("确定删除该作品？此操作会同步到 GitHub。")) return;
+        _works = _works.filter((x) => x.id !== b.dataset.del);
+        pushToGitHub();
         renderAdminWorks();
         updateStorageInfo();
-        render(); // 刷新前台视图
+        render();
       }));
   }
 
@@ -436,11 +582,10 @@
      ⑨ 新增 / 编辑作品弹窗
      --------------------------------------------------------- */
   const editModal = $("#editModal");
-  let editState = null; // { id, images:[], coverIdx, params:[] }
+  let editState = null;
 
   function openEdit(id) {
-    const all = loadWorks() || [];
-    const w = id ? all.find((x) => x.id === id) : null;
+    const w = id ? (_works || []).find((x) => x.id === id) : null;
     editState = {
       id: w ? w.id : null,
       images: w ? (w.images || []).slice() : [],
@@ -489,42 +634,44 @@
         <button class="rm" data-prm="${i}" aria-label="删除">×</button>
       </div>`
     ).join("");
-    $$("[data-pk]", box).forEach((inp) => inp.addEventListener("input", () => editState.params[Number(inp.dataset.pk)].k = inp.value));
-    $$("[data-pv]", box).forEach((inp) => inp.addEventListener("input", () => editState.params[Number(inp.dataset.pv)].v = inp.value));
-    $$("[data-prm]", box).forEach((b) =>
+    $$("#wkParams [data-pk]").forEach((inp) => inp.addEventListener("input", () => editState.params[Number(inp.dataset.pk)].k = inp.value));
+    $$("#wkParams [data-pv]").forEach((inp) => inp.addEventListener("input", () => editState.params[Number(inp.dataset.pv)].v = inp.value));
+    $$("#wkParams [data-prm]").forEach((b) =>
       b.addEventListener("click", () => { editState.params.splice(Number(b.dataset.prm), 1); renderParams(); }));
   }
 
-  // 参数行
   $("#addParamBtn").addEventListener("click", () => { editState.params.push({ k: "", v: "" }); renderParams(); });
 
-  // 保存作品
-  $("#editSave").addEventListener("click", () => {
+  // 保存作品（核心改动：保存后推送到 GitHub）
+  $("#editSave").addEventListener("click", async () => {
     const title = $("#wkTitle").value.trim();
     if (!title) { alert("请填写项目标题。"); return; }
     if (!editState.images.length) { alert("请至少上传一张作品图片。"); return; }
 
-    // 同步参数输入（防御性）
     $$("#wkParams [data-pk]").forEach((inp) => editState.params[Number(inp.dataset.pk)].k = inp.value);
     $$("#wkParams [data-pv]").forEach((inp) => editState.params[Number(inp.dataset.pv)].v = inp.value);
     const params = editState.params.filter((p) => p.k.trim() || p.v.trim());
 
     const cover = editState.images[editState.coverIdx] || editState.images[0];
-    const all = loadWorks() || [];
+
+    if (!_works) _works = [];
     if (editState.id) {
-      const w = all.find((x) => x.id === editState.id);
+      const w = _works.find((x) => x.id === editState.id);
       Object.assign(w, { title, intro: $("#wkIntro").value.trim(), images: editState.images, cover, params });
     } else {
-      all.push({
+      _works.push({
         id: uid(), title, intro: $("#wkIntro").value.trim(),
         images: editState.images, cover, params, createdAt: Date.now(),
       });
     }
-    saveWorks(all);
+
+    // 推送到 GitHub
+    const ok = await pushToGitHub();
     closeEdit();
     renderAdminWorks();
     updateStorageInfo();
     render();
+    if (ok) alert("作品已保存并同步到 GitHub ✓");
   });
 
   // 拖拽上传
@@ -557,10 +704,10 @@
   $("#editBackdrop").addEventListener("click", closeEdit);
 
   /* ---------------------------------------------------------
-     ⑩ 资料编辑
+     ⑩ 资料编辑（同样推送 GitHub）
      --------------------------------------------------------- */
   function renderProfileForm() {
-    const p = loadProfile() || {};
+    const p = _profile || {};
     $("#pfName").value = p.name || "";
     $("#pfTitle").value = p.title || "";
     $("#pfBio").value = p.bio || "";
@@ -570,33 +717,65 @@
     const f = e.target.files && e.target.files[0];
     if (f) { try { avatarBuf = await fileToStored(f); } catch (err) { alert("头像处理失败"); } }
   });
-  $("#saveProfileBtn").addEventListener("click", () => {
-    const cur = loadProfile() || {};
-    const next = {
+  $("#saveProfileBtn").addEventListener("click", async () => {
+    const cur = _profile || {};
+    _profile = {
       name: $("#pfName").value.trim() || "STUDIO",
       title: $("#pfTitle").value.trim(),
       bio: $("#pfBio").value.trim(),
       avatar: avatarBuf || cur.avatar || placeholder("AVATAR", ""),
     };
-    saveProfile(next);
+    const ok = await pushToGitHub();
     avatarBuf = null;
     $("#pfAvatar").value = "";
-    $("#brandName").textContent = next.name;
+    $("#brandName").textContent = _profile.name;
     render();
-    alert("资料已保存。");
+    if (ok) alert("资料已保存并同步到 GitHub ✓");
   });
 
   // 刷新品牌名
   (function syncBrand() {
-    const p = loadProfile();
-    if (p && p.name) $("#brandName").textContent = p.name;
-    if (p && p.title) $("#footCopy").textContent = "© 2026 " + p.name + " · " + p.title;
+    if (_profile && _profile.name) $("#brandName").textContent = _profile.name;
+    if (_profile && _profile.title) $("#footCopy").textContent = "© 2026 " + _profile.name + " · " + _profile.title;
   })();
 
+  // 强制重新同步按钮
+  $("#forceSyncBtn")?.addEventListener("click", async () => {
+    $("#forceSyncBtn").disabled = true;
+    $("#forceSyncBtn").textContent = "⏳ 拉取中…";
+    await fetchFromGitHub();
+    render();
+    updateStorageInfo();
+    $("#forceSyncBtn").disabled = false;
+    $("#forceSyncBtn").textContent = "🔄 立即从 GitHub 重新拉取";
+    alert(_syncStatus === "ok" ? "已从 GitHub 同步最新数据 ✓" : "拉取失败，使用本地缓存");
+  });
+
   /* ---------------------------------------------------------
-     ⑪ 启动
+     ⑪ 启动：先从 GitHub 加载数据，再渲染
      --------------------------------------------------------- */
-  seedIfEmpty();
-  window.addEventListener("hashchange", render);
-  render();
+  async function init() {
+    // 先尝试从 GitHub 拉取
+    await fetchFromGitHub();
+
+    // 如果 GitHub 也没数据（全新部署），用种子数据并推送
+    if (!_works || !_works.length) {
+      console.log("[Portfolio] GitHub 无数据，使用种子数据");
+      const seed = getSeedData();
+      _works = seed.works;
+      _profile = seed.profile;
+      saveWorksCache(_works);
+      saveProfileCache(_profile);
+
+      // 如果有 Token，自动把种子数据推上去
+      if (getGhToken()) {
+        await pushToGitHub();
+      }
+    }
+
+    window.addEventListener("hashchange", render);
+    render();
+  }
+
+  init();
 })();
